@@ -1,262 +1,160 @@
-### Setup ban đầu
-```
-Key A: AIzaSyDKCH... ✅ healthy | 0/13 RPM | 0/250 RPD
-Key B: AIzaSyBymu... ✅ healthy | 0/13 RPM | 0/250 RPD
-Key C: AIzaSyCxyz... ✅ healthy | 0/13 RPM | 0/250 RPD
-```
+# Shopee Ads Tool - Database Schema (MongoDB)
+
+Tài liệu này cung cấp cái nhìn chi tiết nhất về cấu trúc dữ liệu, mục đích sử dụng và ý nghĩa của từng Collection trong hệ thống Shopee Ads Tool.
 
 ---
 
-## PHASE 1: Requests đầu tiên (T=0s)
+## 1. Hệ thống Định danh & Kết nối (Auth & Shops)
 
-### Request 1-6 đến đồng thời:
+### `User` (Thông tin người dùng Dashboard)
+*   **Mục đích**: Lưu trữ tài khoản Admin để truy cập vào giao diện web điều khiển.
+*   **Sử dụng cho tính năng**: Đăng nhập (Login), Đăng ký (Register), Phân quyền người dùng, Quản lý phiên làm việc (Session Management).
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ RequestLimiter: Max 6 concurrent Gemini requests            │
-│ Cho phép tối đa 6 requests xử lý cùng lúc                   │
-└─────────────────────────────────────────────────────────────┘
+| Trường (Field) | Kiểu dữ liệu | Ý nghĩa & Chức năng |
+| :--- | :--- | :--- |
+| `name` | String | Tên hiển thị của người quản trị trên giao diện. |
+| `email` | String | Địa chỉ email dùng làm ID đăng nhập (Duy nhất). |
+| `password` | String | Mật khẩu đã được mã hóa (Hash Bcrypt) để đảm bảo bảo mật. |
+| `refreshToken`| String | Dùng để cấp lại mã Access Token mới khi phiên làm việc cũ hết hạn. |
+| `avatar` | String | Đường dẫn đến ảnh đại diện người dùng (Mặc định: null). |
+| `createdAt` | Date | Thời điểm người dùng này được tạo ra trên hệ thống. |
 
-Request 1 → RequestLimiter ✅ → APIKeyRotator.getBestKey()
-    ↓
-    availableKeys = [Key A, Key B, Key C] (cả 3 đều available)
-    Round-robin index = 0 → Chọn Key A
-    Key A: lastRequestTime = T=0s
+### `Shop` (Kết nối Cửa hàng Shopee)
+*   **Mục đích**: Lưu trữ thông tin định danh và "chìa khóa" (Tokens) để Tool có quyền thay mặt chủ shop gọi vào Shopee API.
+*   **Sử dụng cho tính năng**: Kết nối shop (Auth v2.0), Tự động làm mới Token (Auto-refresh), Bật/Tắt tính năng đồng bộ dữ liệu cho từng Shop cụ thể.
 
-Request 2 → RequestLimiter ✅ → APIKeyRotator.getBestKey()
-    ↓
-    availableKeys = [Key B, Key C] (Key A vừa dùng nhưng vẫn available)
-    Wait! Kiểm tra lại: Key A đã dùng lúc T=0s, now = T=0s
-    now - lastRequestTime = 0s < 1s (minDelay) → Key A KHÔNG available
-
-    availableKeys = [Key B, Key C] (chỉ còn 2 keys)
-    Round-robin index = 1 → Chọn Key B
-    Key B: lastRequestTime = T=0s
-
-Request 3 → RequestLimiter ✅ → APIKeyRotator.getBestKey()
-    ↓
-    Kiểm tra:
-    - Key A: lastRequestTime = 0s, now = 0s → KHÔNG available
-    - Key B: lastRequestTime = 0s, now = 0s → KHÔNG available
-    - Key C: chưa dùng → Available
-
-    availableKeys = [Key C]
-    Round-robin index = 2 → Chọn Key C
-    Key C: lastRequestTime = T=0s
-
-Request 4 → RequestLimiter ✅ → APIKeyRotator.getBestKey()
-    ↓
-    Kiểm tra TẤT CẢ keys:
-    - Key A: lastRequestTime = 0s, now = ~0.001s → 0.001s < 1s → ❌
-    - Key B: lastRequestTime = 0s, now = ~0.001s → 0.001s < 1s → ❌
-    - Key C: lastRequestTime = 0s, now = ~0.001s → 0.001s < 1s → ❌
-
-    availableKeys = [] (EMPTY!)
-
-    → Tính toán wait time:
-    Wait time cho Key A = lastRequestTime + minDelay - now
-                        = 0 + 1000ms - 1ms = 999ms
-
-    ❌ THROW ERROR: "All keys busy. Next available in 1s"
-
-    → Request 4 được XẾP HÀNG trong RequestLimiter queue
-    → Sẽ retry sau khi có key available
-
-Request 5, 6 → Tương tự Request 4, vào hàng đợi
-```
+| Trường (Field) | Kiểu dữ liệu | Ý nghĩa & Chức năng |
+| :--- | :--- | :--- |
+| `shop_id` | Number | ID duy nhất của Shop do Shopee cấp (Dùng trong mọi cuộc gọi API). |
+| `shop_name` | String | Tên Shop lấy từ Shopee để hiển thị trên Dashboard. |
+| `region` | String | Mã vùng của Shop (VD: VN cho Việt Nam). |
+| `access_token`| String | Mã tạm thời để gọi API (Hết hạn sau mỗi 4 tiếng). |
+| `refresh_token`| String | Mã dùng để lấy lại access_token mới (Hết hạn sau 30 ngày). |
+| `expire_in` | Number | Thời gian sống của token tính bằng giây. |
+| `token_expiry_date`| Date | Thời điểm chính xác mà access_token sẽ bị vô hiệu lực. |
+| `is_active` | Boolean | Nếu `false`, hệ thống sẽ ngừng cào dữ liệu và ngừng chạy Rule cho shop này. |
+| `updated_at` | Date | Ghi lại thời điểm thông tin shop hoặc token được cập nhật lần cuối. |
 
 ---
 
-## PHASE 2: Sau 1 giây (T=1s)
+## 2. Quản lý Sản phẩm & Cấu hình Tối ưu
 
-```javascript
-// Request 1, 2, 3 đã gọi API và đang chờ response
-// Key A, B, C đều đã qua 1s delay
+### `Campaign` (Thông tin Chiến dịch)
+*   **Mục đích**: Lưu trữ trạng thái và cấu hình hiện tại của các mẫu quảng cáo trên Shopee.
+*   **Sử dụng cho tính năng**: Lọc chiến dịch trên Dashboard, Hiển thị tên/loại quảng cáo, Cung cấp dữ liệu `item_id` để khớp với giá vốn (COGS).
 
-T=1.0s: Request 4 retry → getBestKey()
-    ↓
-    Kiểm tra:
-    - Key A: lastRequestTime = 0s, now = 1000ms → 1000ms >= 1000ms ✅
-    - Key A: requestsThisMinute = 1, limit = 13 ✅
-    - Key A: isInCooldown = false ✅
-    - Key A: status = healthy ✅
+| Trường (Field) | Kiểu dữ liệu | Ý nghĩa & Chức năng |
+| :--- | :--- | :--- |
+| `shop_id` | Number | Liên kết chiến dịch này với Shop nào. |
+| `campaign_id` | Number | ID chiến dịch do Shopee cấp. |
+| `campaign_name`| String | Tên chiến dịch. |
+| `type` | String | Loại quảng cáo: `gms` (Shop Ads tự động) / `manual` (Liên quan đến từ khóa). |
+| `status` | String | Trạng thái hiện tại trên Shopee (Đang chạy, Đã dừng, Hết ngân sách). |
+| `daily_budget` | Number | Ngân sách giới hạn tối đa mỗi ngày. |
+| `item_id` | Number | ID sản phẩm đại diện cho chiến dịch này (Dùng để tính Profit). |
+| `last_synced` | Date | Lần cuối Tool cập nhật metadata của chiến dịch này từ Shopee. |
 
-    availableKeys = [Key A, Key B, Key C] (cả 3 available lại)
+### `Cogs` (Giá vốn hàng bán)
+*   **Mục đích**: Lưu trữ chi phí nhập hàng cho từng sản phẩm.
+*   **Sử dụng cho tính năng**: Tính toán **Lợi nhuận (Profit)** = (Doanh thu - Chi phí Ads) - (Số đơn x Giá vốn). Để biết Shop đang "Lãi" hay "Lỗ" thật sự.
 
-    Round-robin index = 3 % 3 = 0 → Chọn Key A (lần 2)
-    Key A: requestsThisMinute = 2
-    Key A: lastRequestTime = T=1.0s
-
-T=1.001s: Request 5 retry → getBestKey()
-    ↓
-    - Key A: lastRequestTime = 1000ms, now = 1001ms → 1ms < 1000ms ❌
-    - Key B: lastRequestTime = 0ms, now = 1001ms → 1001ms >= 1000ms ✅
-
-    availableKeys = [Key B, Key C]
-    Round-robin index = 4 % 2 = 0 → Chọn Key B (lần 2)
-    Key B: requestsThisMinute = 2
-    Key B: lastRequestTime = T=1.001s
-
-T=1.002s: Request 6 retry → getBestKey()
-    ↓
-    availableKeys = [Key C]
-    Chọn Key C (lần 2)
-    Key C: requestsThisMinute = 2
-    Key C: lastRequestTime = T=1.002s
-```
+| Trường (Field) | Kiểu dữ liệu | Ý nghĩa & Chức năng |
+| :--- | :--- | :--- |
+| `item_id` | Number | ID sản phẩm (Dùng để khớp với dữ liệu Ads). |
+| `model_id` | Number | ID của phân loại (Size, Màu sắc) - mặc định 0 nếu không tách lẻ. |
+| `item_name` | String | Tên sản phẩm để người dùng dễ nhận biết khi nhập giá vốn. |
+| `cogs` | Number | Giá vốn nhập hàng (Đơn vị: VND). |
+| `updated_at` | Date | Ngày cập nhật giá vốn gần nhất. |
 
 ---
 
-## PHASE 3: Sau 2 giây (T=2s)
+## 3. Hệ thống Báo cáo & Caching (Module A - Dashboard)
 
-```javascript
-// Giả sử Request 1, 2, 3 đã hoàn thành
-// Request 4, 5, 6 đang chờ response
-// Còn Request 7, 8, 9, 10 trong queue
+### `Performance` (Dữ liệu Hiệu quả Lịch sử)
+*   **Mục đích**: Lưu trữ các chỉ số kinh doanh theo từng ngày/giờ để phục vụ phân tích dài hạn.
+*   **Sử dụng cho tính năng**: Vẽ biểu đồ đường (Charts) trên Dashboard, Báo cáo theo tuần/tháng, So sánh hiệu quả giữa các chiến dịch trong quá khứ. Cào mỗi 30 phút.
 
-T=2.0s: Request 7 → getBestKey()
-    ↓
-    Kiểm tra available:
-    - Key A: lastRequestTime = 1000ms, now = 2000ms → 1000ms >= 1000ms ✅
-    - Key A: requestsThisMinute = 2, limit = 13 ✅
+| Trường (Field) | Kiểu dữ liệu | Ý nghĩa & Chức năng |
+| :--- | :--- | :--- |
+| `shop_id` | Number | ID Shop. |
+| `campaign_id` | Number | ID Chiến dịch. |
+| `campaign_name`| String | Tên chiến dịch tại thời điểm đồng bộ. |
+| `date` | String | Ngày ghi nhận dữ liệu (Định dạng: `dd-mm-yyyy`). |
+| `hour` | Number | Giờ ghi nhận dữ liệu (Dùng cho biểu đồ theo giờ). |
+| `impression` | Number | Số lượt quảng cáo hiển thị tới khách hàng. |
+| `clicks` | Number | Số lượt khách nhấp chuột vào quảng cáo. |
+| `spend` | Number | Số tiền Shopee đã trừ vào tài khoản quảng cáo. |
+| `conversion` | Number | Số đơn hàng (Tính cả Broad Match). |
+| `gmv` | Number | Tổng giá trị đơn hàng (Doanh thu Ads). |
+| `orders` | Number | Số lượng đơn hàng trực tiếp. |
+| `roas` | Number | Hiệu quả chi phí (GMV / Spend). |
+| `last_updated` | Date | Thời điểm chính xác Tool cào dữ liệu này về máy. |
 
-    availableKeys = [Key A, Key B, Key C]
-    Chọn Key A (lần 3)
-    Key A: requestsThisMinute = 3
+### `AdsRealtime` (Dữ liệu "Nóng" - Đồng bộ mỗi 5 Phút)
+*   **Mục đích**: Lưu trữ duy nhất số liệu **của ngày hôm nay** với tốc độ cập nhật siêu nhanh.
+*   **Sử dụng cho tính năng**:
+    1.  Hiển thị Tab "Hôm nay" trên Dashboard với độ trễ thấp nhất.
+    2.  Làm căn cứ để **Automation Engine** ra quyết định tắt/mở quảng cáo ngay lập tức (Real-time Action).
 
-T=2.001s: Request 8 → Key B (lần 3)
-T=2.002s: Request 9 → Key C (lần 3)
-T=3.0s: Request 10 → Key A (lần 4)
-```
+| Trường (Field) | Kiểu dữ liệu | Ý nghĩa & Chức năng |
+| :--- | :--- | :--- |
+| `shop_id` | Number | ID Shop. |
+| `campaign_id` | Number | ID Chiến dịch. |
+| `campaign_name`| String | Tên chiến dịch. |
+| `impression_today`| Number | Tổng lượt hiển thị tính từ 0h sáng hôm nay. |
+| `clicks_today` | Number | Tổng lượt Click tính từ 0h sáng. |
+| `spend_today` | Number | Tổng tiền tiêu tính từ 0h sáng. |
+| `rev_ads_today` | Number | Tổng doanh thu Ads tính từ 0h sáng. |
+| `orders_today` | Number | Tổng số đơn hàng tính từ 0h sáng. |
+| `synced_at` | Date | Thời điểm cập nhật cuối cùng (Cứ mỗi 5p cào 1 lần). |
 
----
+### `StorePerformance` (Doanh thu Tổng thể Shop)
+*   **Mục đích**: Lưu trữ tổng doanh thu (Ads + Tự nhiên) theo từng ngày của toàn Shop.
+*   **Sử dụng cho tính năng**: Tính toán **Doanh thu tự nhiên (Organic Revenue)** = Doanh thu tổng - Doanh thu Ads. Giúp đo lường sức khỏe toàn diện của Shop.
 
-## KẾT QUẢ SAU 3 GIÂY
-
-```
-Key A: 4 requests (Request 1, 4, 7, 10)
-    Timeline: T=0s, T=1.0s, T=2.0s, T=3.0s
-    Status: 4/13 RPM ✅ healthy
-
-Key B: 3 requests (Request 2, 5, 8)
-    Timeline: T=0s, T=1.001s, T=2.001s
-    Status: 3/13 RPM ✅ healthy
-
-Key C: 3 requests (Request 3, 6, 9)
-    Timeline: T=0s, T=1.002s, T=2.002s
-    Status: 3/13 RPM ✅ healthy
-
-Total: 10 requests được phân tải đều trên 3 keys
-Load balancing: 40% - 30% - 30% (khá đều)
-```
-
----
-
-## LOGIC PHÂN TÍCH CHI TIẾT
-
-### 1. **Filter Available Keys**
-
-Mỗi lần `getBestKey()` được gọi:
-
-```javascript
-const availableKeys = Array.from(this.keys.values()).filter(key => {
-    const usage = this.keyUsage.get(key.id);
-    const health = this.keyHealth.get(key.id);
-    const now = Date.now();
-
-    // Kiểm tra 6 điều kiện:
-    return (
-        key.isActive &&                                    // ✅ 1. Active
-        health.status === 'healthy' &&                     // ✅ 2. Healthy
-        usage.requestsThisMinute < 13 &&                   // ✅ 3. < 13 RPM
-        usage.requestsThisHour < 700 &&                    // ✅ 4. < 700 RPH
-        !usage.isInCooldown &&                             // ✅ 5. Không cooldown
-        now - usage.lastRequestTime >= 1000                // ✅ 6. Đã chờ >= 1s
-    );
-});
-```
-
-**Điều kiện 6 là KEY**: Đảm bảo mỗi key chỉ xử lý 1 request/giây!
-
-### 2. **Sort by Lowest Usage**
-
-```javascript
-availableKeys.sort((a, b) => {
-    const usageA = this.keyUsage.get(a.id);
-    const usageB = this.keyUsage.get(b.id);
-
-    // Ưu tiên key có RPM thấp hơn
-    if (usageA.requestsThisMinute !== usageB.requestsThisMinute) {
-        return usageA.requestsThisMinute - usageB.requestsThisMinute;
-    }
-
-    // Nếu bằng nhau thì xem priority
-    return b.priority - a.priority;
-});
-```
-
-**Ví dụ sắp xếp:**
-```
-Key A: 5 RPM
-Key B: 3 RPM  ← Chọn B vì ít usage hơn
-Key C: 8 RPM
-
-Sau sort: [Key B, Key A, Key C]
-```
-
-### 3. **Round-Robin Selection**
-
-```javascript
-// this.keyRotationIndex tăng dần: 0, 1, 2, 3, 4, 5...
-const selectedKey = availableKeys[this.keyRotationIndex % availableKeys.length];
-this.keyRotationIndex = (this.keyRotationIndex + 1) % availableKeys.length;
-
-// Ví dụ: availableKeys = [Key B, Key A, Key C] (3 keys)
-// Lần 1: index = 0 % 3 = 0 → Key B
-// Lần 2: index = 1 % 3 = 1 → Key A
-// Lần 3: index = 2 % 3 = 2 → Key C
-// Lần 4: index = 3 % 3 = 0 → Key B (lặp lại)
-```
+| Trường (Field) | Kiểu dữ liệu | Ý nghĩa & Chức năng |
+| :--- | :--- | :--- |
+| `shop_id` | Number | ID Shop. |
+| `date` | String | Ngày ghi nhận dữ liệu (`dd-mm-yyyy`). |
+| `rev_total` | Number | Tổng doanh số toàn shop (Lấy từ Order API). |
+| `order_total` | Number | Tổng số đơn hàng toàn shop. |
+| `last_updated` | Date | Thời điểm cập nhật cuối cùng. |
 
 ---
 
-## TRƯỜNG HỢP ĐẶC BIỆT: KEY HẾT QUOTA
+## 4. Hệ thống Tự động hóa (Module B)
 
-### Scenario: Key B hết quota giữa chừng
+### `AutomationRule` (Danh sách các Kịch bản Tự động)
+*   **Mục đích**: Lưu trữ "bộ não" của hệ thống - các quy tắc do người dùng cài đặt.
+*   **Sử dụng cho tính năng**: Động cơ Automation Engine sẽ quét qua bảng này để biết phải tối ưu quảng cáo nào.
 
-```javascript
-Timeline:
-T=0s: Request 1 → Key A ✅
-T=0s: Request 2 → Key B ✅ (Nhưng Gemini trả về 429 - Quota exceeded!)
-      ↓
-      executeGeminiAPI() catch error
-      ↓
-      apiManager.recordUsage(keyB, false, 100ms, error)
-      ↓
-      // Phát hiện lỗi quota
-      isDailyQuotaExceeded = true
-      ↓
-      key.isActive = false  ← Key B BỊ DISABLE!
-      health.status = 'quota_exceeded'
-      ↓
-      // Retry với key khác
-      attemptCount = 1 < maxRetries (3)
-      ↓
-      getBestKey() lần 2
-      ↓
-      availableKeys = [Key A, Key C] (Key B đã bị loại!)
-      ↓
-      Chọn Key C → Success! ✅
+| Trường (Field) | Kiểu dữ liệu | Ý nghĩa & Chức năng |
+| :--- | :--- | :--- |
+| `shop_id` | Number | Quy tắc này áp dụng cho Shop nào. |
+| `name` | String | Tên gợi nhớ của quy tắc. |
+| `description` | String | Mô tả rule này dùng để làm gì. |
+| `conditions` | Array | Các điều kiện kỹ thuật (VD: `roas < 1.0`, `spend > 200k`). |
+| `action` | Object | Hành động thực hiện (VD: `pause_ad`, `update_budget`). |
+| `isDryRun` | Boolean | Chạy thử: Hệ thống chỉ ghi log báo cáo, KHÔNG tắt/mở thật trên Shopee. |
+| `isActive` | Boolean | Bật/Tắt quy tắc này. |
+| `lastExecutedAt`| Date | Thời điểm gần nhất rule này thực hiện kiểm soát ads. |
+| `createdAt` | Date | Ngày tạo rule. |
+| `updatedAt` | Date | Ngày sửa đổi rule cuối cùng. |
 
-T=0s: Request 3 → Key C ✅
-T=1s: Request 4 → Key A ✅ (Key B vẫn disabled)
-...
+### `ActionLog` (Nhật ký Thực thi Quảng cáo)
+*   **Mục đích**: Ghi lại lịch sử hoạt động của Automation Engine.
+*   **Sử dụng cho tính năng**: Audit (Kiểm soát), báo cáo hành động qua Telegram, truy vết xem tại sao một quảng cáo lại bị Tắt hoặc Tăng ngân sách.
 
-// Sau 24 giờ, Key B tự động re-enable
-T=24h: setTimeout callback
-       ↓
-       key.isActive = true
-       health.status = 'healthy'
-```
-
----
+| Trường (Field) | Kiểu dữ liệu | Ý nghĩa & Chức năng |
+| :--- | :--- | :--- |
+| `rule_id` | ObjectId | Rule nào đã thực hiện hành động này. |
+| `shop_id` | Number | Shop bị tác động. |
+| `campaign_id` | Number | Chiến dịch bị Tool thay đổi ngân sách/trạng thái. |
+| `campaign_name`| String | Tên chiến dịch tại thời điểm đó. |
+| `metric_snapshot`| Object | "Ảnh chụp" các chỉ số (ROAS, Spend...) ngay lúc đó để giải thích lý do thực thi. |
+| `action_type` | String | Hành động đã làm: Bật, Tắt, hay Thay đổi ngân sách. |
+| `action_value`| Mixed | Giá trị mới (VD: Ngân sách tăng lên 150.000đ). |
+| `status` | String | Trạng thái thực hiện: `success` (Thành công), `error` (Thất bại). |
+| `message` | String | Thông báo chi tiết lỗi hoặc lý do nếu bỏ qua (Skipped). |
+| `api_response` | Object | Toàn bộ phản hồi từ Shopee API (Phục vụ kỹ thuật Fix lỗi). |
+| `createdAt` | Date | Giờ thực hiện hành động. |
